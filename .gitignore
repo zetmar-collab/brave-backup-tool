@@ -4,6 +4,7 @@ backup-settings.json
 
 # Build ps2exe (pobierany przy Build-Exe.ps1)
 scripts/ps2exe-mod/
+scripts/BraveBackupTool.bundle.ps1
 
 # System / IDE
 Thumbs.db

@@ -1,4 +1,4 @@
-# Brave Backup Tool v2
+# Brave Backup Tool v2.1
 
 Narzędzie na **Windows** do kopii zapasowej i przywracania profilu przeglądarki **Brave** — zakładki, hasła, historia, rozszerzenia, sesje kart.
 
@@ -14,10 +14,19 @@ Alternatywnie: sklonuj repozytorium i uruchom `Uruchom.bat`.
 ## Szybki start
 
 1. Pobierz i uruchom `BraveBackup.exe`.
-2. Kliknij **Ustaw folder kopii** i wybierz dysk (np. `E:\Brave_kopia`).
-3. Zamknij Brave (program zapyta i zamknie procesy).
-4. Wybierz **Pełna kopia** lub **Kluczowe dane**.
+2. Przy pierwszym uruchomieniu przejdź krótki onboarding (folder kopii, zamknięcie Brave).
+3. Kliknij **Ustaw folder kopii** i wybierz dysk (np. `E:\Brave_kopia`).
+4. Użyj **Utwórz kopię zapasową** (kluczowe dane) lub **Pełna kopia**.
 5. Po zakończeniu kopia pojawi się na liście.
+
+**Język:** przycisk **EN** / **PL** w prawym górnym rogu lub **Ustawienia → Język**. Możesz też uruchomić z parametrem: `BraveBackup.exe -Lang en`.
+
+## Pomoc / Help
+
+| Język | Plik |
+|-------|------|
+| Polski | [docs/POMOC-pl.md](docs/POMOC-pl.md) |
+| English | [docs/HELP-en.md](docs/HELP-en.md) |
 
 ## Funkcje
 
@@ -27,7 +36,11 @@ Alternatywnie: sklonuj repozytorium i uruchom `Uruchom.bat`.
 | Kluczowe dane | Zakładki, loginy, cookies, historia, rozszerzenia, sesje |
 | Przywracanie | Nadpisanie lub pełne przywrócenie profilu |
 | Folder kopii | Dowolna ścieżka, zapisywana w ustawieniach |
-| Rotacja | Maks. 10 kopii, najstarsze usuwane automatycznie |
+| Rotacja | Maks. kopii w ustawieniach (domyślnie 10) |
+| Onboarding | Pierwsze uruchomienie — 3 kroki |
+| Bezpieczeństwo | Okno z informacją o lokalnych kopiach |
+| Przywracanie | Checkbox potwierdzenia + opcjonalna kopia przed restore |
+| Języki | Polski i angielski (PL / EN) |
 
 ## Tryb konsoli
 
@@ -50,8 +63,8 @@ Wynik: `BraveBackup.exe` w katalogu głównym projektu.
 Po wypchnięciu tagu `v*` workflow buduje EXE i publikuje go w **Releases**:
 
 ```bash
-git tag v2.0.1
-git push origin v2.0.1
+git tag v2.1.0
+git push origin v2.1.0
 ```
 
 Możesz też uruchomić workflow ręcznie: **Actions → Release EXE → Run workflow**.
@@ -64,8 +77,12 @@ brave-backup-tool/
   assets/              # ikona aplikacji
   scripts/
     BraveBackupTool.ps1
+    BraveBackup.I18n.ps1
+    BraveBackup.Gui.ps1
     Build-Exe.ps1
   docs/
+    POMOC-pl.md        # pomoc (PL)
+    HELP-en.md         # help (EN)
     NAFFY-OPIS.md      # opis pod listing naffy.io
 ```
 

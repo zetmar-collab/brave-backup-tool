@@ -6,12 +6,44 @@
     Zbuduj EXE: scripts\Build-Exe.ps1
 #>
 param(
-    [switch]$Console
+    # [object] zamiast [switch] — ps2exe/EXE czesto przekazuje string do parametrow bool
+    [Parameter()][object]$Console = $null,
+    [ValidateSet('pl', 'en', '')]
+    [string]$Lang = ''
 )
 
 # StrictMode Latest + pojedynczy obiekt zamiast tablicy psuje .Count w skompilowanym EXE
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
+
+function Test-FlagOn([object]$value) {
+    if ($null -eq $value) { return $false }
+    if ($value -is [switch]) { return $value.IsPresent }
+    if ($value -is [bool]) { return $value }
+    $s = [string]$value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $false }
+    return ($s -match '^(?i)(true|1|yes|y|console|on)$')
+}
+
+function Convert-ToBoolParam([object]$value, [bool]$default = $false) {
+    if ($null -eq $value) { return $default }
+    if ($value -is [bool]) { return $value }
+    if ($value -is [switch]) { return $value.IsPresent }
+    $s = [string]$value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $default }
+    if ($s -match '^(?i)(false|0|no|n|off)$') { return $false }
+    return ($s -match '^(?i)(true|1|yes|y|on)$')
+}
+
+$Script:UseConsole = Test-FlagOn $Console
+
+$__toolDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+$__i18nPath = Join-Path $__toolDir 'BraveBackup.I18n.ps1'
+if (Test-Path $__i18nPath) { . $__i18nPath }
+
+$Script:Lang = 'pl'
+$Script:OnboardingCompleted = $false
+$Script:GitHubReleasesUrl = 'https://github.com/zetmar-collab/brave-backup-tool/releases/latest'
 
 # ── Sciezki (dziala jako .ps1 i jako skompilowane .exe) ─────────────────────
 
@@ -61,6 +93,15 @@ function Get-SettingsPath {
     return (Join-Path $BackupParent 'backup-settings.json')
 }
 
+function Get-AllowedMaxBackups([int]$value) {
+    $allowed = @(5, 10, 15, 20)
+    if ($value -in $allowed) { return $value }
+    if ($value -le 7) { return 5 }
+    if ($value -le 12) { return 10 }
+    if ($value -le 17) { return 15 }
+    return 20
+}
+
 function Load-BackupSettings {
     $path = Get-SettingsPath
     if (-not (Test-Path $path)) { return }
@@ -69,15 +110,38 @@ function Load-BackupSettings {
         if ($json.BackupRoot) {
             $Script:Config.BackupRoot = [string]$json.BackupRoot
         }
+        if ($json.Language -eq 'pl' -or $json.Language -eq 'en') {
+            $Script:Lang = [string]$json.Language
+        }
+        if ($null -ne $json.OnboardingCompleted) {
+            $Script:OnboardingCompleted = [bool]$json.OnboardingCompleted
+        }
+        if ($json.MaxBackups) {
+            $Script:Config.MaxBackups = Get-AllowedMaxBackups ([int]$json.MaxBackups)
+        }
     } catch { }
 }
 
 function Save-BackupSettings {
     $path = Get-SettingsPath
     @{
-        BackupRoot = $Script:Config.BackupRoot
-        SavedAt    = (Get-Date -Format 'o')
+        BackupRoot           = $Script:Config.BackupRoot
+        Language             = $Script:Lang
+        OnboardingCompleted  = $Script:OnboardingCompleted
+        MaxBackups           = $Script:Config.MaxBackups
+        SavedAt              = (Get-Date -Format 'o')
     } | ConvertTo-Json | Set-Content $path -Encoding UTF8
+}
+
+function Get-LastBackupInfo {
+    $list = @(Get-BackupList)
+    if ((Get-ArrayCount $list) -eq 0) { return $null }
+    $b = $list | Select-Object -First 1
+    return @{
+        Name = $b.Name
+        Date = Format-BackupDateTime $b.CreationTime
+        Path = $b.FullName
+    }
 }
 
 function Ensure-BackupRootExists {
@@ -87,6 +151,8 @@ function Ensure-BackupRootExists {
 }
 
 Load-BackupSettings
+if ($Lang -eq 'pl' -or $Lang -eq 'en') { $Script:Lang = $Lang }
+Initialize-I18n
 Ensure-BackupRootExists
 
 # ── Logika wspolna ───────────────────────────────────────────────────────────
@@ -168,7 +234,7 @@ function Remove-OldBackups ([scriptblock]$OnLog) {
     $toDelete = $all | Select-Object -Last ((Get-ArrayCount $all) - $Script:Config.MaxBackups)
     foreach ($old in $toDelete) {
         Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        if ($OnLog) { & $OnLog "Usunieto stara kopie: $($old.Name)" 'warn' }
+        if ($OnLog) { & $OnLog (Tf 'LogOldRemoved' @($old.Name)) 'warn' }
     }
 }
 
@@ -209,6 +275,7 @@ function Copy-ProfileItems {
             $errors.Add("$($item.Name): $($_.Exception.Message)")
         }
         $i++
+        if ($OnLog) { & $OnLog (Tf 'LogCopyingItem' @($item.Name)) 'info' }
         if ($OnProgress) {
             $pct = [int]($ProgressBase + ($i / $total) * $ProgressSpan)
             & $OnProgress $pct
@@ -216,7 +283,7 @@ function Copy-ProfileItems {
     }
 
     if ($errors.Count -gt 0 -and $OnLog) {
-        foreach ($e in $errors) { & $OnLog "  Blad: $e" 'err' }
+        foreach ($e in $errors) { & $OnLog (Tf 'LogErrItem' @($e)) 'err' }
     }
     return @{ Copied = $copied; Errors = $errors.Count }
 }
@@ -228,7 +295,7 @@ function Invoke-BraveBackupCore {
         [scriptblock]$OnLog
     )
     if (-not (Test-Path $Script:Config.BraveUserData)) {
-        if ($OnLog) { & $OnLog "Nie znaleziono danych Brave: $($Script:Config.BraveUserData)" 'err' }
+        if ($OnLog) { & $OnLog (Tf 'MsgNoBraveData' @($Script:Config.BraveUserData)) 'err' }
         return $false
     }
 
@@ -241,13 +308,13 @@ function Invoke-BraveBackupCore {
         Created    = (Get-Date -Format 'o')
         Mode       = $mode
         SourcePath = $Script:Config.BraveUserData
-        AppVersion = '2.0'
+        AppVersion = '2.1'
         Profiles   = @()
     }
 
     $profiles = Get-ProfilePaths
     if ((Get-ArrayCount $profiles) -eq 0) {
-        if ($OnLog) { & $OnLog 'Brak profili Brave do skopiowania.' 'err' }
+        if ($OnLog) { & $OnLog (T 'MsgNoProfiles') 'err' }
         return $false
     }
 
@@ -255,7 +322,7 @@ function Invoke-BraveBackupCore {
     $pIdx = 0
     foreach ($profilePath in $profiles) {
         $profileName = Split-Path $profilePath -Leaf
-        if ($OnLog) { & $OnLog "Kopiuje profil: $profileName" 'info' }
+        if ($OnLog) { & $OnLog (Tf 'LogCopyingProfile' @($profileName)) 'info' }
         $destProfile = Join-Path $backupDir $profileName
         New-Item -ItemType Directory -Path $destProfile -Force | Out-Null
 
@@ -266,7 +333,7 @@ function Invoke-BraveBackupCore {
             -ProgressBase $base -ProgressSpan $span
 
         if ($OnLog) {
-            & $OnLog ("{0}: skopiowano {1} elementow, bledy: {2}" -f $profileName, $result.Copied, $result.Errors) 'ok'
+            & $OnLog (Tf 'LogProfileDone' @($profileName, $result.Copied, $result.Errors)) 'ok'
         }
         $meta.Profiles += $profileName
         $pIdx++
@@ -275,7 +342,7 @@ function Invoke-BraveBackupCore {
     $localState = Join-Path $Script:Config.BraveUserData 'Local State'
     if (Test-Path $localState) {
         Copy-Item $localState (Join-Path $backupDir 'Local State') -Force -ErrorAction SilentlyContinue
-        if ($OnLog) { & $OnLog 'Skopiowano Local State.' 'ok' }
+        if ($OnLog) { & $OnLog (T 'LogLocalState') 'ok' }
     }
 
     $meta | ConvertTo-Json -Depth 4 |
@@ -284,8 +351,8 @@ function Invoke-BraveBackupCore {
     Remove-OldBackups -OnLog $OnLog
     if ($OnProgress) { & $OnProgress 100 }
     if ($OnLog) {
-        & $OnLog ("Kopia gotowa: $backupDir") 'ok'
-        & $OnLog ("Rozmiar: $(Format-Size (Get-FolderSize $backupDir))") 'info'
+        & $OnLog (Tf 'LogDone' @($backupDir)) 'ok'
+        & $OnLog (Tf 'LogSize' @(Format-Size (Get-FolderSize $backupDir))) 'info'
     }
     return $true
 }
@@ -305,7 +372,7 @@ function Invoke-BraveRestoreCore {
         [scriptblock]$OnLog
     )
     if (-not (Test-Path $BackupPath)) {
-        if ($OnLog) { & $OnLog "Nie znaleziono kopii: $BackupPath" 'err' }
+        if ($OnLog) { & $OnLog (Tf 'MsgBackupNotFound' @($BackupPath)) 'err' }
         return $false
     }
 
@@ -323,12 +390,12 @@ function Invoke-BraveRestoreCore {
         $destProfile = Join-Path $Script:Config.BraveUserData $profileName
         if (-not (Test-Path $srcProfile)) { $pIdx++; continue }
 
-        if ($OnLog) { & $OnLog "Przywracam profil: $profileName" 'info' }
+        if ($OnLog) { & $OnLog (Tf 'LogRestoreProfile' @($profileName)) 'info' }
         if (-not (Test-Path $destProfile)) {
             New-Item -ItemType Directory -Path $destProfile -Force | Out-Null
         }
         if ($ReplaceProfile) {
-            if ($OnLog) { & $OnLog "  Czyszczenie profilu przed przywroceniem..." 'warn' }
+            if ($OnLog) { & $OnLog (T 'LogClearProfile') 'warn' }
             Clear-ProfileDirectory $destProfile
         }
 
@@ -359,10 +426,10 @@ function Invoke-BraveRestoreCore {
         }
 
         if ($errors.Count -gt 0 -and $OnLog) {
-            foreach ($e in $errors) { & $OnLog "  Blad: $e" 'err' }
+            foreach ($e in $errors) { & $OnLog (Tf 'LogErrItem' @($e)) 'err' }
         }
         if ($OnLog) {
-            & $OnLog ("{0}: przywrocono {1} elementow, bledy: {2}" -f $profileName, $copied, $errors.Count) 'ok'
+            & $OnLog (Tf 'LogRestoreProfileDone' @($profileName, $copied, $errors.Count)) 'ok'
         }
         $pIdx++
     }
@@ -370,19 +437,29 @@ function Invoke-BraveRestoreCore {
     $srcLS = Join-Path $BackupPath 'Local State'
     if (Test-Path $srcLS) {
         Copy-Item $srcLS (Join-Path $Script:Config.BraveUserData 'Local State') -Force -ErrorAction SilentlyContinue
-        if ($OnLog) { & $OnLog 'Przywrocono Local State.' 'ok' }
+        if ($OnLog) { & $OnLog (T 'LogRestoredLS') 'ok' }
     }
 
     if ($OnProgress) { & $OnProgress 100 }
-    if ($OnLog) { & $OnLog 'Przywracanie zakonczone. Mozesz uruchomic Brave.' 'ok' }
+    if ($OnLog) { & $OnLog (T 'LogRestoreDone') 'ok' }
     return $true
+}
+
+function Invoke-PreRestoreBackup {
+    param(
+        [scriptblock]$OnLog,
+        [scriptblock]$OnProgress
+    )
+    if ($OnLog) { & $OnLog (T 'LogPreRestore') 'info' }
+    return Invoke-BraveBackupCore -FullBackup $false -OnLog $OnLog -OnProgress $OnProgress
 }
 
 function Request-BraveCloseConfirmation {
     param(
         [bool]$UseConsolePrompt = $false,
-        [string]$PromptMessage = 'Brave jest uruchomiony. Zamknac wszystkie procesy Brave?'
+        [string]$PromptMessage = ''
     )
+    if (-not $PromptMessage) { $PromptMessage = T 'MsgCloseBrave' }
     $procs = Get-BraveProcesses
     if ((Get-ArrayCount $procs) -eq 0) { return $true }
 
@@ -394,8 +471,8 @@ function Request-BraveCloseConfirmation {
 
     Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
     $result = [System.Windows.MessageBox]::Show(
-        "$PromptMessage`n`nAktywnych procesow: $(Get-ArrayCount $procs)",
-        'Brave Backup Tool', 'YesNo', 'Warning')
+        "$PromptMessage`n`n$(Tf 'MsgCloseBraveProcs' @(Get-ArrayCount $procs))",
+        (T 'AppTitle'), 'YesNo', 'Warning')
     return ($result -eq 'Yes')
 }
 
@@ -424,7 +501,7 @@ function Ensure-BraveClosedForOperation {
 function Write-Header {
     Clear-Host
     Write-Host ('=' * 60) -ForegroundColor Cyan
-    Write-Host '   BRAVE BACKUP TOOL v2' -ForegroundColor Cyan
+    Write-Host "   $(T 'AppTitle') $(T 'AppVersion')" -ForegroundColor Cyan
     Write-Host ('=' * 60) -ForegroundColor Cyan
     Write-Host ''
 }
@@ -460,7 +537,7 @@ function Start-ConsoleApp {
         Write-Info 'TWORZENIE KOPII ZAPASOWEJ'
         Write-Host ''
         if (-not (Ensure-BraveClosedForOperation -UseConsolePrompt $true)) {
-            Write-Warn 'Anulowano (Brave nadal dziala).'
+            Write-Warn (T 'LogOpCanceled')
             Pause-AndReturn
             return
         }
@@ -538,8 +615,8 @@ function Start-ConsoleApp {
         Write-Host "    Kopie:       $(Get-ArrayCount $backups) / $($Script:Config.MaxBackups)" -ForegroundColor Gray
         Write-Host "    Folder:      $($Script:Config.BackupRoot)" -ForegroundColor Gray
         Write-Host ''
-        Write-Host '  [1] Pelna kopia  [2] Kluczowe dane  [3] Przywroc  [4] Usun  [Q] Wyjdz' -ForegroundColor White
-        $key = Read-Host '  Wybor'
+        Write-Host "  $(T 'ConsoleMenu')" -ForegroundColor White
+        $key = Read-Host '  >'
         switch ($key.Trim().ToUpper()) {
             '1' { Invoke-BackupMenu -fullBackup $true }
             '2' { Invoke-BackupMenu -fullBackup $false }
@@ -553,289 +630,8 @@ function Start-ConsoleApp {
 
 # ── GUI (WPF) ────────────────────────────────────────────────────────────────
 
-function Start-GuiApp {
-    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
-
-    $xamlText = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Brave Backup Tool" Height="620" Width="840"
-    WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize" Background="#1a1a2e">
-  <Window.Resources>
-    <Style x:Key="Btn" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Padding" Value="14,8"/>
-      <Setter Property="Margin" Value="4"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.85"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="bd" Property="Background" Value="#444"/></Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-    <Style TargetType="ListBoxItem">
-      <Setter Property="Foreground" Value="#ddd"/>
-      <Setter Property="Padding" Value="8,6"/>
-      <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ListBoxItem">
-            <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="#333" BorderThickness="0,0,0,1" Padding="{TemplateBinding Padding}">
-              <ContentPresenter/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsSelected" Value="True"><Setter TargetName="bd" Property="Background" Value="#2a3a5e"/></Trigger>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#22304a"/></Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
-  <Grid Margin="16">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/><RowDefinition Height="160"/>
-    </Grid.RowDefinitions>
-    <DockPanel Grid.Row="0" Margin="0,0,0,10">
-      <TextBlock Text="BRAVE BACKUP TOOL v2" Foreground="#e25c1e" FontSize="20" FontWeight="Bold"/>
-      <TextBlock x:Name="txtBusy" Text="  [pracuje...]" Foreground="#fa0" Margin="12,0,0,0" Visibility="Collapsed"/>
-      <TextBlock x:Name="txtStatus" Foreground="#888" FontSize="10" Margin="16,4,0,0" TextWrapping="Wrap"/>
-    </DockPanel>
-    <WrapPanel Grid.Row="1">
-      <Button x:Name="btnFull" Content="Pelna kopia" Background="#e25c1e" Style="{StaticResource Btn}"/>
-      <Button x:Name="btnKey" Content="Kluczowe dane" Background="#c0631e" Style="{StaticResource Btn}"/>
-      <Button x:Name="btnRestore" Content="Przywroc" Background="#2d5a8e" Style="{StaticResource Btn}"/>
-      <Button x:Name="btnDelete" Content="Usun" Background="#7a1a1a" Style="{StaticResource Btn}"/>
-      <Button x:Name="btnRefresh" Content="Odswiez" Background="#2d2d4e" Style="{StaticResource Btn}"/>
-      <Button x:Name="btnFolder" Content="Ustaw folder kopii" Background="#2d2d4e" Style="{StaticResource Btn}"/>
-    </WrapPanel>
-    <Border Grid.Row="2" Background="#12122a" CornerRadius="8">
-      <ListBox x:Name="lstBackups" Background="Transparent" BorderThickness="0">
-        <ListBox.ItemTemplate>
-          <DataTemplate>
-            <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/><ColumnDefinition Width="150"/><ColumnDefinition Width="80"/>
-              </Grid.ColumnDefinitions>
-              <TextBlock Text="{Binding Name}" Foreground="White"/>
-              <TextBlock Grid.Column="1" Text="{Binding DateStr}" Foreground="#aaa"/>
-              <TextBlock Grid.Column="2" Text="{Binding SizeStr}" Foreground="#6af"/>
-            </Grid>
-          </DataTemplate>
-        </ListBox.ItemTemplate>
-      </ListBox>
-    </Border>
-    <Grid Grid.Row="3" Margin="0,8,0,4">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="40"/></Grid.ColumnDefinitions>
-      <ProgressBar x:Name="progress" Height="7" Maximum="100"/>
-      <TextBlock x:Name="txtPct" Grid.Column="1" Text="0%" Foreground="#aaa" Margin="6,0,0,0"/>
-    </Grid>
-    <Border Grid.Row="4" Background="#0d0d1e" CornerRadius="8" Padding="8">
-      <ScrollViewer x:Name="logScroll" VerticalScrollBarVisibility="Auto">
-        <TextBlock x:Name="txtLog" Foreground="#7af" FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"/>
-      </ScrollViewer>
-    </Border>
-  </Grid>
-</Window>
-'@
-
-    $window = [Windows.Markup.XamlReader]::Parse($xamlText)
-    $iconPath = Get-AppIconPath
-    if ($iconPath) {
-        $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create(
-            [Uri]::new($iconPath, [UriKind]::Absolute))
-    }
-    $c = @{
-        btnFull = $window.FindName('btnFull'); btnKey = $window.FindName('btnKey')
-        btnRestore = $window.FindName('btnRestore'); btnDelete = $window.FindName('btnDelete')
-        btnRefresh = $window.FindName('btnRefresh'); btnFolder = $window.FindName('btnFolder')
-        lst = $window.FindName('lstBackups'); txtLog = $window.FindName('txtLog')
-        logScroll = $window.FindName('logScroll'); txtStatus = $window.FindName('txtStatus')
-        progress = $window.FindName('progress'); txtPct = $window.FindName('txtPct')
-        txtBusy = $window.FindName('txtBusy')
-    }
-
-    function Invoke-OnUi([scriptblock]$action) {
-        if ($window.Dispatcher.CheckAccess()) {
-            & $action
-        } else {
-            $window.Dispatcher.Invoke($action)
-        }
-    }
-
-    function Gui-Log ([string]$msg, [string]$type = 'info') {
-        $p = switch ($type) { 'ok' { '[OK]  ' } 'err' { '[ERR] ' } 'warn' { '[!]   ' } default { '[>>]  ' } }
-        $line = "[$(Get-Date -Format 'HH:mm:ss')] $p$msg`n"
-        Invoke-OnUi { $c.txtLog.Text += $line; $c.logScroll.ScrollToEnd() }
-    }
-    function Gui-Pct ([int]$v) {
-        Invoke-OnUi { $c.progress.Value = $v; $c.txtPct.Text = "$v%" }
-    }
-    function Gui-Busy ([bool]$on) {
-        Invoke-OnUi {
-            $c.txtBusy.Visibility = if ($on) { 'Visible' } else { 'Collapsed' }
-            foreach ($b in @($c.btnFull, $c.btnKey, $c.btnRestore, $c.btnDelete)) { $b.IsEnabled = -not $on }
-        }
-    }
-    function Gui-Refresh {
-        $backups = @(Get-BackupList)
-        $rows = foreach ($b in $backups) {
-            [PSCustomObject]@{
-                Name     = $b.Name
-                DateStr  = Format-BackupDateTime $b.CreationTime
-                SizeStr  = Format-Size (Get-FolderSize $b.FullName)
-                FullPath = $b.FullName
-            }
-        }
-        $procCount = Get-ArrayCount (Get-BraveProcesses)
-        $backupCount = Get-ArrayCount $backups
-        $status = "Brave: $procCount proces(ow) | Kopie: $backupCount/$($Script:Config.MaxBackups) | $($Script:Config.BackupRoot)"
-        Invoke-OnUi {
-            $c.lst.ItemsSource = $null
-            $c.lst.ItemsSource = @($rows)
-            $c.txtStatus.Text = $status
-        }
-    }
-
-    function Start-GuiWorker {
-        param([bool]$Restore, [bool]$Full = $false, [string]$Path = '', [bool]$Replace = $false)
-
-        try {
-            if (-not (Ensure-BraveClosedForOperation)) {
-                Gui-Log 'Anulowano — zamknij Brave lub potwierdz zamkniecie.' 'warn'
-                return
-            }
-            Gui-Busy $true
-
-            # Jawne bool + $script: — w EXE zmienne z closure bywaja "" zamiast $false
-            $script:PendingGuiWork = @{
-                DoRestore        = [bool]$Restore
-                FullBackup       = [bool]$Full
-                BackupPath       = [string]$Path
-                ReplaceProfile   = [bool]$Replace
-            }
-
-            $null = $window.Dispatcher.BeginInvoke(
-                [System.Windows.Threading.DispatcherPriority]::Background,
-                [action]{
-                    $w = $script:PendingGuiWork
-                    $prevEA = $ErrorActionPreference
-                    $ErrorActionPreference = 'Continue'
-                    try {
-                        if (-not (Stop-AllBraveProcesses)) {
-                            Gui-Log 'Nie udalo sie zamknac wszystkich procesow Brave.' 'err'
-                            return
-                        }
-                        $onLog = { param($m, $t) Gui-Log $m $t }
-                        $onPct = { param($v) Gui-Pct $v }
-                        if ($w.DoRestore) {
-                            if ($w.ReplaceProfile) {
-                                [void](Invoke-BraveRestoreCore -BackupPath $w.BackupPath -ReplaceProfile $true -OnProgress $onPct -OnLog $onLog)
-                            } else {
-                                [void](Invoke-BraveRestoreCore -BackupPath $w.BackupPath -ReplaceProfile $false -OnProgress $onPct -OnLog $onLog)
-                            }
-                        } elseif ($w.FullBackup) {
-                            [void](Invoke-BraveBackupCore -FullBackup $true -OnProgress $onPct -OnLog $onLog)
-                        } else {
-                            [void](Invoke-BraveBackupCore -FullBackup $false -OnProgress $onPct -OnLog $onLog)
-                        }
-                    } catch {
-                        Gui-Log "BLAD: $($_.Exception.Message)" 'err'
-                    } finally {
-                        $ErrorActionPreference = $prevEA
-                        Invoke-OnUi { $c.progress.Value = 0; $c.txtPct.Text = '0%' }
-                        Gui-Busy $false
-                        Gui-Refresh
-                    }
-                })
-        } catch {
-            Gui-Log "BLAD uruchomienia: $($_.Exception.Message)" 'err'
-            Gui-Busy $false
-        }
-    }
-
-    function Select-BackupFolder {
-        Add-Type -AssemblyName System.Windows.Forms
-        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dlg.Description = 'Wybierz folder, w ktorym maja byc zapisywane kopie Brave'
-        $dlg.ShowNewFolderButton = $true
-        if (Test-Path $Script:Config.BackupRoot) {
-            $dlg.SelectedPath = $Script:Config.BackupRoot
-        }
-        if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
-        $Script:Config.BackupRoot = $dlg.SelectedPath
-        Ensure-BackupRootExists
-        Save-BackupSettings
-        return $true
-    }
-
-    $c.btnFull.Add_Click({
-        try { Gui-Log 'Pelna kopia...'; Start-GuiWorker -Restore $false -Full $true }
-        catch { Gui-Log "BLAD: $($_.Exception.Message)" 'err'; Gui-Busy $false }
-    })
-    $c.btnKey.Add_Click({
-        try { Gui-Log 'Kopia kluczowych danych...'; Start-GuiWorker -Restore $false -Full $false }
-        catch { Gui-Log "BLAD: $($_.Exception.Message)" 'err'; Gui-Busy $false }
-    })
-    $c.btnRestore.Add_Click({
-        $sel = $c.lst.SelectedItem
-        if (-not $sel) {
-            [System.Windows.MessageBox]::Show('Zaznacz kopie na liscie.', 'Brak wyboru') | Out-Null
-            return
-        }
-        $ans = [System.Windows.MessageBox]::Show(
-            "Przywrocic:`n$($sel.Name)`n`nBiezacy profil zostanie nadpisany.",
-            'Potwierdzenie', 'YesNo', 'Warning')
-        if ($ans -ne 'Yes') { return }
-        $ans2 = [System.Windows.MessageBox]::Show(
-            "Pelne przywrocenie profilu?`n`nTAK = usunie pliki spoza kopii przed przywroceniem`nNIE = tylko nadpisze pliki z kopii",
-            'Tryb przywrocenia', 'YesNoCancel', 'Question')
-        if ($ans2 -eq 'Cancel') { return }
-        $replace = ($ans2 -eq 'Yes')
-        Gui-Log "Przywracam: $($sel.Name) (pelne=$replace)..."
-        Start-GuiWorker -Restore $true -Path $sel.FullPath -Replace $replace
-    })
-    $c.btnDelete.Add_Click({
-        $sel = $c.lst.SelectedItem
-        if (-not $sel) { return }
-        if ([System.Windows.MessageBox]::Show("Usunac:`n$($sel.Name)?", 'Usuwanie', 'YesNo') -ne 'Yes') { return }
-        Remove-Item $sel.FullPath -Recurse -Force -ErrorAction SilentlyContinue
-        Gui-Log "Usunieto: $($sel.Name)" 'warn'
-        Gui-Refresh
-    })
-    $c.btnRefresh.Add_Click({
-        Gui-Refresh
-        Gui-Log 'Lista odswiezona.' 'info'
-    })
-    $c.btnFolder.Add_Click({
-        if (Select-BackupFolder) {
-            Gui-Refresh
-            Gui-Log "Folder kopii: $($Script:Config.BackupRoot)" 'ok'
-        }
-    })
-
-    Gui-Refresh
-    Gui-Log 'Uruchomiono Brave Backup Tool v2'
-    Gui-Log "Kopie: $($Script:Config.BackupRoot)"
-    $null = $window.ShowDialog()
+$__guiPath = Join-Path $__toolDir 'BraveBackup.Gui.ps1'
+if (-not (Test-Path $__guiPath)) {
+    throw "Brak pliku GUI: $__guiPath"
 }
-
-# ── Start ────────────────────────────────────────────────────────────────────
-
-if ($Console) {
-    Start-ConsoleApp
-} else {
-    Start-GuiApp
-}
+. $__guiPath
