@@ -1,0 +1,69 @@
+name: Release EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag release (np. v2.0.1) — tylko przy recznym uruchomieniu'
+        required: false
+        default: 'v2.0.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ustal tag i wersje
+        id: meta
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $tag = '${{ github.event.inputs.tag }}'
+          } else {
+            $tag = '${{ github.ref_name }}'
+          }
+          if ([string]::IsNullOrWhiteSpace($tag)) { throw 'Brak tagu wersji' }
+          $raw = $tag.TrimStart('v')
+          $parts = $raw -split '\.'
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $ver = ($parts[0..3] -join '.')
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Tag: $tag | Wersja EXE: $ver"
+
+      - name: Zbuduj BraveBackup.exe
+        shell: pwsh
+        run: |
+          & ./scripts/Build-Exe.ps1 -Version '${{ steps.meta.outputs.version }}'
+          if (-not (Test-Path ./BraveBackup.exe)) {
+            throw 'Nie utworzono BraveBackup.exe'
+          }
+          Get-Item ./BraveBackup.exe | Format-List Name, Length, LastWriteTime
+
+      - name: Utworz tag (reczne uruchomienie)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ steps.meta.outputs.tag }}"
+          git push origin "${{ steps.meta.outputs.tag }}" --force
+
+      - name: Publikuj Release z EXE
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Brave Backup Tool ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: BraveBackup.exe
+          fail_on_unmatched_files: true

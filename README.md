@@ -45,6 +45,17 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-Exe.ps1
 
 Wynik: `BraveBackup.exe` w katalogu głównym projektu.
 
+## Automatyczny release (GitHub Actions)
+
+Po wypchnięciu tagu `v*` workflow buduje EXE i publikuje go w **Releases**:
+
+```bash
+git tag v2.0.1
+git push origin v2.0.1
+```
+
+Możesz też uruchomić workflow ręcznie: **Actions → Release EXE → Run workflow**.
+
 ## Struktura projektu
 
 ```text

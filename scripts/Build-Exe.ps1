@@ -3,6 +3,9 @@
 .SYNOPSIS
     Buduje BraveBackup.exe z ikona (assets\BraveBackup.ico).
 #>
+param(
+    [string]$Version = '2.0.0.0'
+)
 $ErrorActionPreference = 'Stop'
 
 $scriptDir   = $PSScriptRoot
@@ -38,7 +41,7 @@ Write-Host "Budowanie: $output" -ForegroundColor Cyan
 Write-Host "Ikona:     $icon" -ForegroundColor Cyan
 Invoke-ps2exe -inputFile $source -outputFile $output -noConsole -iconFile $icon `
     -title 'Brave Backup Tool' -description 'Kopia zapasowa profilu Brave' `
-    -company 'Brave Backup Tool' -product 'BraveBackup' -version '2.0.0.0'
+    -company 'Brave Backup Tool' -product 'BraveBackup' -version $Version
 
 if (Test-Path $output) {
     Write-Host ''
