@@ -363,6 +363,98 @@ function Start-GuiApp {
         }
     }
 
+    function Show-ProfilePickerDialog {
+        param(
+            [string]$Title,
+            [string]$Hint,
+            [object[]]$Entries
+        )
+        if ((Get-ArrayCount $Entries) -eq 0) { return @() }
+        if ((Get-ArrayCount $Entries) -eq 1) {
+            return @([string]$Entries[0].Folder)
+        }
+
+        $dlgXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  Height="340" Width="460" WindowStartupLocation="CenterOwner"
+  ResizeMode="NoResize" Background="#1a1a2e">
+  <StackPanel Margin="20">
+    <TextBlock x:Name="txtHint" TextWrapping="Wrap" Foreground="#e0e0e8" FontSize="13" Margin="0,0,0,8"/>
+    <WrapPanel Margin="0,0,0,8">
+      <Button x:Name="btnAll" Padding="10,6" Margin="0,0,8,0" Background="#2d5a8e" Foreground="White" BorderThickness="0" Cursor="Hand"/>
+      <Button x:Name="btnNone" Padding="10,6" Background="#4a4a5e" Foreground="White" BorderThickness="0" Cursor="Hand"/>
+    </WrapPanel>
+    <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto">
+      <StackPanel x:Name="pnlChecks"/>
+    </ScrollViewer>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+      <Button x:Name="btnOk" MinWidth="100" Margin="0,0,10,0" Padding="14,9" Background="#e25c1e" Foreground="White" BorderThickness="0" Cursor="Hand"/>
+      <Button x:Name="btnCancel" MinWidth="100" Padding="14,9" Background="#4a4a5e" Foreground="White" BorderThickness="0" Cursor="Hand"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+        $dlg = [Windows.Markup.XamlReader]::Parse($dlgXaml)
+        $dlg.Title = $Title
+        $dlg.Owner = $window
+        $dlg.FindName('txtHint').Text = $Hint
+        $dlg.FindName('btnAll').Content = T 'BtnSelectAll'
+        $dlg.FindName('btnNone').Content = T 'BtnSelectNone'
+        $dlg.FindName('btnOk').Content = T 'BtnYes'
+        $dlg.FindName('btnCancel').Content = T 'BtnCancel'
+        $pnl = $dlg.FindName('pnlChecks')
+        $checks = [System.Collections.Generic.List[object]]::new()
+        foreach ($e in $Entries) {
+            $cb = New-Object System.Windows.Controls.CheckBox
+            $label = if ($e.Label -and $e.Label -ne $e.Folder) {
+                "$($e.Label) ($($e.Folder))"
+            } else {
+                [string]$e.Folder
+            }
+            $cb.Content = $label
+            $cb.IsChecked = $true
+            $cb.Foreground = [System.Windows.Media.Brushes]::White
+            $cb.Margin = '0,5,0,5'
+            $cb.FontSize = 13
+            $cb.Tag = [string]$e.Folder
+            $null = $pnl.Children.Add($cb)
+            $checks.Add($cb)
+        }
+        $dlg.FindName('btnAll').Add_Click({
+            foreach ($c in $checks) { $c.IsChecked = $true }
+        })
+        $dlg.FindName('btnNone').Add_Click({
+            foreach ($c in $checks) { $c.IsChecked = $false }
+        })
+        $dlg.FindName('btnCancel').Add_Click({ $dlg.DialogResult = $false; $dlg.Close() })
+        $dlg.FindName('btnOk').Add_Click({
+            $picked = @($checks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
+            if ((Get-ArrayCount $picked) -eq 0) {
+                [System.Windows.MessageBox]::Show((T 'ProfilePickNone'), $Title, 'OK', 'Warning') | Out-Null
+                return
+            }
+            $dlg.Tag = $picked
+            $dlg.DialogResult = $true
+            $dlg.Close()
+        })
+        if ($dlg.ShowDialog() -ne $true) { return $null }
+        return @($dlg.Tag)
+    }
+
+    function Start-BackupWithProfilePick {
+        param([bool]$Full)
+        $entries = @(Get-BraveProfileEntries)
+        if ((Get-ArrayCount $entries) -eq 0) {
+            [System.Windows.MessageBox]::Show((T 'MsgNoProfiles'), (T 'AppTitle')) | Out-Null
+            return
+        }
+        $picked = Show-ProfilePickerDialog -Title (T 'ProfilePickBackupTitle') -Hint (T 'ProfilePickHint') -Entries $entries
+        if ($null -eq $picked) { return }
+        if ($Full) { Gui-Log (T 'LogFullStart') } else { Gui-Log (T 'LogKeyStart') }
+        Start-GuiWorker -Restore:$false -Full:$Full -ProfileFolders $picked
+    }
+
     function Show-DeleteConfirmDialog {
         param([string]$BackupName)
         $dlgXaml = @'
@@ -451,7 +543,8 @@ function Start-GuiApp {
             [object]$Full = $false,
             [string]$Path = '',
             [object]$Replace = $false,
-            [object]$PreRestoreBackup = $false
+            [object]$PreRestoreBackup = $false,
+            [string[]]$ProfileFolders = @()
         )
         $Restore = Convert-ToBoolParam $Restore
         $Full = Convert-ToBoolParam $Full
@@ -469,6 +562,7 @@ function Start-GuiApp {
                 BackupPath       = [string]$Path
                 ReplaceProfile   = [bool]$Replace
                 PreRestoreBackup = [bool]$PreRestoreBackup
+                ProfileFolders   = @($ProfileFolders)
             }
             $null = $window.Dispatcher.BeginInvoke(
                 [System.Windows.Threading.DispatcherPriority]::Background,
@@ -488,11 +582,14 @@ function Start-GuiApp {
                         }
                         if ($w.DoRestore) {
                             [void](Invoke-BraveRestoreCore -BackupPath $w.BackupPath `
-                                -ReplaceProfile $w.ReplaceProfile -OnProgress $onPct -OnLog $onLog)
+                                -ReplaceProfile $w.ReplaceProfile -ProfileFolders $w.ProfileFolders `
+                                -OnProgress $onPct -OnLog $onLog)
                         } elseif ($w.FullBackup) {
-                            [void](Invoke-BraveBackupCore -FullBackup $true -OnProgress $onPct -OnLog $onLog)
+                            [void](Invoke-BraveBackupCore -FullBackup $true -ProfileFolders $w.ProfileFolders `
+                                -OnProgress $onPct -OnLog $onLog)
                         } else {
-                            [void](Invoke-BraveBackupCore -FullBackup $false -OnProgress $onPct -OnLog $onLog)
+                            [void](Invoke-BraveBackupCore -FullBackup $false -ProfileFolders $w.ProfileFolders `
+                                -OnProgress $onPct -OnLog $onLog)
                         }
                     } catch {
                         Gui-Log (Tf 'LogErrPrefix' @($_.Exception.Message)) 'err'
@@ -510,16 +607,16 @@ function Start-GuiApp {
     }
 
     $c.btnCreate.Add_Click({
-        try { Gui-Log (T 'LogKeyStart'); Start-GuiWorker -Restore:$false -Full:$false }
-        catch { Gui-Log (Tf 'LogErrPrefix' @($_.Exception.Message)) 'err'; Gui-Busy $false }
+        try { Start-BackupWithProfilePick -Full $false }
+        catch { Gui-Log (Tf 'LogErrPrefix' -FormatValues @($_.Exception.Message)) 'err'; Gui-Busy $false }
     })
     $c.btnFull.Add_Click({
-        try { Gui-Log (T 'LogFullStart'); Start-GuiWorker -Restore:$false -Full:$true }
-        catch { Gui-Log (Tf 'LogErrPrefix' @($_.Exception.Message)) 'err'; Gui-Busy $false }
+        try { Start-BackupWithProfilePick -Full $true }
+        catch { Gui-Log (Tf 'LogErrPrefix' -FormatValues @($_.Exception.Message)) 'err'; Gui-Busy $false }
     })
     $c.btnKey.Add_Click({
-        try { Gui-Log (T 'LogKeyStart'); Start-GuiWorker -Restore:$false -Full:$false }
-        catch { Gui-Log (Tf 'LogErrPrefix' @($_.Exception.Message)) 'err'; Gui-Busy $false }
+        try { Start-BackupWithProfilePick -Full $false }
+        catch { Gui-Log (Tf 'LogErrPrefix' -FormatValues @($_.Exception.Message)) 'err'; Gui-Busy $false }
     })
     $c.btnRestore.Add_Click({
         $sel = Get-SelectedBackupRow
@@ -529,9 +626,12 @@ function Start-GuiApp {
         }
         $opts = Show-RestoreDialog -Sel $sel
         if (-not $opts) { return }
-        Gui-Log (Tf 'LogRestoreStart' @(Get-BackupDisplayName $sel))
+        $backupEntries = @(Get-BackupProfileEntriesFromBackup -BackupPath $sel.FullPath)
+        $picked = Show-ProfilePickerDialog -Title (T 'ProfilePickRestoreTitle') -Hint (T 'ProfilePickHint') -Entries $backupEntries
+        if ($null -eq $picked) { return }
+        Gui-Log (Tf 'LogRestoreStart' -FormatValues @(Get-BackupDisplayName $sel))
         Start-GuiWorker -Restore:$true -Path $sel.FullPath -Replace:$opts.ReplaceProfile `
-            -PreRestoreBackup:$opts.PreBackup
+            -PreRestoreBackup:$opts.PreBackup -ProfileFolders $picked
     })
     $c.btnDelete.Add_Click({
         $sel = Get-SelectedBackupRow

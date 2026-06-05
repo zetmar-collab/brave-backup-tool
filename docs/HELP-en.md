@@ -1,6 +1,6 @@
 # Brave Backup Tool — help (EN)
 
-Version **2.1** | [Pomoc po polsku](POMOC-pl.md)
+Version **2.1.1** | [Pomoc po polsku](POMOC-pl.md)
 
 ## What does it do?
 
@@ -14,6 +14,19 @@ Creates **local** backups of your **Brave** browser profile (bookmarks, password
 4. Click **Set backup folder** and choose a drive (e.g. external disk).
 5. Close Brave — the app will prompt and close Brave processes.
 6. Click **Create backup** (recommended: key data) or **Full backup**.
+7. If you have **more than one Brave profile**, select which profiles to include (e.g. *Default*, *Profile 1*).
+
+## Multiple Brave profiles
+
+Brave can have several profiles (separate bookmarks, passwords, extensions). The app detects them automatically.
+
+When **backing up** or **restoring**, a dialog lists available profiles:
+
+- check the profiles you want,
+- **Select all** / **Select none**,
+- confirm with **Yes**.
+
+In **console mode**, enter profile numbers (e.g. `1,2`) or `A` for all.
 
 ## Main buttons
 
@@ -48,7 +61,8 @@ The **EN / PL** toggle in the header switches language immediately.
 
 1. Select a backup from the list.
 2. Click **Restore**.
-3. Confirm you understand the profile will be overwritten.
+3. Choose which profiles to restore (if the backup contains more than one).
+4. Confirm you understand the profile will be overwritten.
 4. Optional: **safety backup before restore** (recommended).
 5. Choose mode:
    - **Overwrite files from backup only** — safer

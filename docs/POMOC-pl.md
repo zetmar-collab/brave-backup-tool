@@ -1,6 +1,6 @@
 # Brave Backup Tool — pomoc (PL)
 
-Wersja **2.1** | [English help](HELP-en.md)
+Wersja **2.1.1** | [English help](HELP-en.md)
 
 ## Co robi program?
 
@@ -14,6 +14,19 @@ Tworzy **lokalne** kopie zapasowe profilu przeglądarki **Brave** (zakładki, ha
 4. Kliknij **Ustaw folder kopii** i wybierz dysk (np. dysk zewnętrzny).
 5. Zamknij Brave — program zapyta i zamknie procesy.
 6. Kliknij **Utwórz kopię zapasową** (zalecane: kluczowe dane) lub **Pełna kopia**.
+7. Jeśli masz **więcej niż jeden profil Brave**, zaznacz które profile skopiować (np. *Default*, *Profile 1*).
+
+## Wiele profili Brave
+
+Brave może mieć kilka profili (osobne zakładki, hasła, rozszerzenia). Program wykrywa je automatycznie.
+
+Przy **kopii** i **przywracaniu** pojawia się okno z listą profili:
+
+- zaznacz profile, które chcesz uwzględnić,
+- **Zaznacz wszystkie** / **Odznacz wszystkie**,
+- potwierdź przyciskiem **Tak**.
+
+W **trybie konsoli** wpisz numery profili (np. `1,2`) lub `A` dla wszystkich.
 
 ## Przyciski główne
 
@@ -48,7 +61,8 @@ Przełącznik **EN / PL** w nagłówku okna zmienia język od razu.
 
 1. Zaznacz kopię na liście.
 2. Kliknij **Przywróć**.
-3. Zaznacz, że rozumiesz nadpisanie profilu.
+3. Wybierz profile do przywrócenia (jeśli kopia zawiera więcej niż jeden).
+4. Zaznacz, że rozumiesz nadpisanie profilu.
 4. Opcjonalnie: **kopia zapasowa przed przywróceniem** (zalecane).
 5. Wybierz tryb:
    - **Nadpisz tylko pliki z kopii** — bezpieczniejsze

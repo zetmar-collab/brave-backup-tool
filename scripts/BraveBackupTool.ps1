@@ -199,27 +199,157 @@ function Get-BraveProcesses {
 }
 
 function Stop-AllBraveProcesses {
-    $deadline = (Get-Date).AddSeconds(20)
+    $deadline = (Get-Date).AddSeconds(30)
+    $procNames = @('brave', 'BraveCrashHandler', 'bravecrashhandler')
     do {
-        $procs = Get-BraveProcesses
-        if ((Get-ArrayCount $procs) -eq 0) { return $true }
-        foreach ($p in $procs) {
+        $alive = @()
+        foreach ($pn in $procNames) {
+            $alive += @(Get-Process -Name $pn -ErrorAction SilentlyContinue)
+        }
+        if ((Get-ArrayCount $alive) -eq 0) {
+            Start-Sleep -Milliseconds 800
+            return $true
+        }
+        foreach ($p in $alive) {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 600
     } while ((Get-Date) -lt $deadline)
-    return ((Get-ArrayCount (Get-BraveProcesses)) -eq 0)
+    $left = 0
+    foreach ($pn in $procNames) {
+        $left += (Get-ArrayCount (Get-Process -Name $pn -ErrorAction SilentlyContinue))
+    }
+    return ($left -eq 0)
+}
+
+function Get-BraveLocalStatePath {
+    return (Join-Path $Script:Config.BraveUserData 'Local State')
+}
+
+function Get-BraveProfileEntries {
+    $root = $Script:Config.BraveUserData
+    $entries = [System.Collections.Generic.List[object]]::new()
+    $seen = @{}
+
+    $lsPath = Get-BraveLocalStatePath
+    if (Test-Path $lsPath) {
+        try {
+            $ls = Get-Content $lsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $cache = $ls.profile.info_cache
+            if ($null -ne $cache) {
+                foreach ($prop in $cache.PSObject.Properties) {
+                    $folder = [string]$prop.Name
+                    if ($folder -eq 'System Profile') { continue }
+                    $profilePath = Join-Path $root $folder
+                    $pref = Join-Path $profilePath 'Preferences'
+                    if (-not (Test-Path $pref)) { continue }
+                    if ($seen.ContainsKey($folder)) { continue }
+                    $seen[$folder] = $true
+                    $label = ''
+                    try { $label = [string]$prop.Value.name } catch { }
+                    if ([string]::IsNullOrWhiteSpace($label)) { $label = $folder }
+                    $entries.Add([PSCustomObject]@{
+                        Folder = $folder
+                        Label  = $label
+                        Path   = $profilePath
+                    })
+                }
+            }
+        } catch { }
+    }
+
+    if ($entries.Count -eq 0) {
+        $candidates = @('Default')
+        $candidates += @(Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(Profile \d+|Guest Profile)$' } |
+            Select-Object -ExpandProperty Name)
+        foreach ($name in ($candidates | Select-Object -Unique)) {
+            if ($seen.ContainsKey($name)) { continue }
+            $profilePath = Join-Path $root $name
+            if (-not (Test-Path (Join-Path $profilePath 'Preferences'))) { continue }
+            $seen[$name] = $true
+            $entries.Add([PSCustomObject]@{
+                Folder = $name
+                Label  = $name
+                Path   = $profilePath
+            })
+        }
+    }
+
+    return @($entries)
 }
 
 function Get-ProfilePaths {
-    $root = $Script:Config.BraveUserData
-    $dirs = @()
-    $default = Join-Path $root 'Default'
-    if (Test-Path $default) { $dirs += $default }
-    $dirs += @(Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^(Profile \d+|Guest Profile)$' } |
-        Select-Object -ExpandProperty FullName)
-    return @($dirs | Select-Object -Unique)
+    return @(Get-BraveProfileEntries | ForEach-Object { $_.Path })
+}
+
+function Get-BackupProfileEntriesFromBackup {
+    param([string]$BackupPath)
+    $folders = @(Get-BackupProfileNames $BackupPath)
+    $labels = @{}
+    $metaPath = Join-Path $BackupPath 'backup-meta.json'
+    if (Test-Path $metaPath) {
+        try {
+            $meta = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($meta.ProfileLabels) {
+                foreach ($prop in $meta.ProfileLabels.PSObject.Properties) {
+                    $labels[$prop.Name] = [string]$prop.Value
+                }
+            }
+        } catch { }
+    }
+    return @($folders | ForEach-Object {
+        $f = $_
+        [PSCustomObject]@{
+            Folder = $f
+            Label  = if ($labels.ContainsKey($f)) { $labels[$f] } else { $f }
+            Path   = Join-Path $BackupPath $f
+        }
+    })
+}
+
+function Get-BackupProfileNames([string]$BackupPath) {
+    $names = [System.Collections.Generic.List[string]]::new()
+    $metaPath = Join-Path $BackupPath 'backup-meta.json'
+    if (Test-Path $metaPath) {
+        try {
+            $meta = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($meta.Profiles) {
+                foreach ($p in @($meta.Profiles)) {
+                    if ($p) { $null = $names.Add([string]$p) }
+                }
+            }
+        } catch { }
+    }
+    if ($names.Count -eq 0) {
+        foreach ($d in @(Get-ChildItem $BackupPath -Directory -ErrorAction SilentlyContinue)) {
+            if (Test-Path (Join-Path $d.FullName 'Preferences')) {
+                $null = $names.Add($d.Name)
+            }
+        }
+    }
+    if ($names.Count -eq 0) { return @('Default') }
+    return @($names | Select-Object -Unique)
+}
+
+function Copy-UserDataRootFiles {
+    param(
+        [string]$DestDir,
+        [scriptblock]$OnLog
+    )
+    $rootFiles = @('Local State', 'Last Browser', 'Last Version', 'First Run')
+    foreach ($fileName in $rootFiles) {
+        $src = Join-Path $Script:Config.BraveUserData $fileName
+        if (-not (Test-Path $src)) { continue }
+        try {
+            Copy-Item $src (Join-Path $DestDir $fileName) -Force -ErrorAction Stop
+            if ($OnLog -and $fileName -eq 'Local State') {
+                & $OnLog (T 'LogLocalState') 'ok'
+            }
+        } catch {
+            if ($OnLog) { & $OnLog (Tf 'LogErrItem' @("$fileName : $($_.Exception.Message)")) 'warn' }
+        }
+    }
 }
 
 function Get-BackupList {
@@ -291,6 +421,7 @@ function Copy-ProfileItems {
 function Invoke-BraveBackupCore {
     param(
         [bool]$FullBackup,
+        [string[]]$ProfileFolders = @(),
         [scriptblock]$OnProgress,
         [scriptblock]$OnLog
     )
@@ -308,21 +439,32 @@ function Invoke-BraveBackupCore {
         Created    = (Get-Date -Format 'o')
         Mode       = $mode
         SourcePath = $Script:Config.BraveUserData
-        AppVersion = '2.1'
+        AppVersion = '2.1.1'
         Profiles   = @()
     }
 
-    $profiles = Get-ProfilePaths
-    if ((Get-ArrayCount $profiles) -eq 0) {
+    $profileEntries = @(Get-BraveProfileEntries)
+    if ((Get-ArrayCount $ProfileFolders) -gt 0) {
+        $profileEntries = @($profileEntries | Where-Object { $_.Folder -in $ProfileFolders })
+    }
+    if ((Get-ArrayCount $profileEntries) -eq 0) {
         if ($OnLog) { & $OnLog (T 'MsgNoProfiles') 'err' }
         return $false
     }
 
-    $totalP = [Math]::Max((Get-ArrayCount $profiles), 1)
+    if ($OnLog) {
+        $labels = ($profileEntries | ForEach-Object { "$($_.Label) [$($_.Folder)]" }) -join ', '
+        & $OnLog (Tf 'LogProfilesFound' @((Get-ArrayCount $profileEntries), $labels)) 'info'
+    }
+
+    $totalCopied = 0
+    $totalP = [Math]::Max((Get-ArrayCount $profileEntries), 1)
     $pIdx = 0
-    foreach ($profilePath in $profiles) {
-        $profileName = Split-Path $profilePath -Leaf
-        if ($OnLog) { & $OnLog (Tf 'LogCopyingProfile' @($profileName)) 'info' }
+    foreach ($entry in $profileEntries) {
+        $profilePath = $entry.Path
+        $profileName = $entry.Folder
+        $logName = if ($entry.Label -ne $profileName) { "$($entry.Label) ($profileName)" } else { $profileName }
+        if ($OnLog) { & $OnLog (Tf 'LogCopyingProfile' @($logName)) 'info' }
         $destProfile = Join-Path $backupDir $profileName
         New-Item -ItemType Directory -Path $destProfile -Force | Out-Null
 
@@ -333,16 +475,21 @@ function Invoke-BraveBackupCore {
             -ProgressBase $base -ProgressSpan $span
 
         if ($OnLog) {
-            & $OnLog (Tf 'LogProfileDone' @($profileName, $result.Copied, $result.Errors)) 'ok'
+            & $OnLog (Tf 'LogProfileDone' @($logName, $result.Copied, $result.Errors)) 'ok'
         }
+        $totalCopied += $result.Copied
         $meta.Profiles += $profileName
+        if (-not $meta.ProfileLabels) { $meta.ProfileLabels = @{} }
+        $meta.ProfileLabels[$profileName] = $entry.Label
         $pIdx++
     }
 
-    $localState = Join-Path $Script:Config.BraveUserData 'Local State'
-    if (Test-Path $localState) {
-        Copy-Item $localState (Join-Path $backupDir 'Local State') -Force -ErrorAction SilentlyContinue
-        if ($OnLog) { & $OnLog (T 'LogLocalState') 'ok' }
+    Copy-UserDataRootFiles -DestDir $backupDir -OnLog $OnLog
+
+    if ($totalCopied -eq 0) {
+        if ($OnLog) { & $OnLog (T 'MsgBackupNothingCopied') 'err' }
+        Remove-Item $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+        return $false
     }
 
     $meta | ConvertTo-Json -Depth 4 |
@@ -368,6 +515,7 @@ function Invoke-BraveRestoreCore {
     param(
         [string]$BackupPath,
         [bool]$ReplaceProfile,
+        [string[]]$ProfileFolders = @(),
         [scriptblock]$OnProgress,
         [scriptblock]$OnLog
     )
@@ -376,11 +524,17 @@ function Invoke-BraveRestoreCore {
         return $false
     }
 
-    $profileNames = @('Default')
-    $profileNames += @(Get-ChildItem $BackupPath -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^(Profile \d+|Guest Profile)$' } |
-        Select-Object -ExpandProperty Name)
-    $profileNames = @($profileNames | Select-Object -Unique)
+    $allInBackup = @(Get-BackupProfileNames $BackupPath)
+    if ((Get-ArrayCount $ProfileFolders) -gt 0) {
+        $profileNames = @($ProfileFolders | Where-Object { $_ -in $allInBackup })
+    } else {
+        $profileNames = $allInBackup
+    }
+    if ((Get-ArrayCount $profileNames) -eq 0) {
+        if ($OnLog) { & $OnLog (T 'ProfilePickNone') 'err' }
+        return $false
+    }
+    $restoreRootFiles = ((Get-ArrayCount $profileNames) -eq (Get-ArrayCount $allInBackup))
 
     $totalP = [Math]::Max((Get-ArrayCount $profileNames), 1)
     $pIdx = 0
@@ -434,10 +588,13 @@ function Invoke-BraveRestoreCore {
         $pIdx++
     }
 
-    $srcLS = Join-Path $BackupPath 'Local State'
-    if (Test-Path $srcLS) {
-        Copy-Item $srcLS (Join-Path $Script:Config.BraveUserData 'Local State') -Force -ErrorAction SilentlyContinue
-        if ($OnLog) { & $OnLog (T 'LogRestoredLS') 'ok' }
+    if ($restoreRootFiles) {
+        foreach ($rootFile in @('Local State', 'Last Browser', 'Last Version', 'First Run')) {
+            $src = Join-Path $BackupPath $rootFile
+            if (-not (Test-Path $src)) { continue }
+            Copy-Item $src (Join-Path $Script:Config.BraveUserData $rootFile) -Force -ErrorAction SilentlyContinue
+            if ($OnLog -and $rootFile -eq 'Local State') { & $OnLog (T 'LogRestoredLS') 'ok' }
+        }
     }
 
     if ($OnProgress) { & $OnProgress 100 }
@@ -531,6 +688,38 @@ function Pause-AndReturn {
     Read-Host '  [Enter] aby kontynuowac'
 }
 
+function Pick-ConsoleProfiles {
+    param([object[]]$Entries)
+    if ((Get-ArrayCount $Entries) -eq 0) { return @() }
+    if ((Get-ArrayCount $Entries) -eq 1) { return @([string]$Entries[0].Folder) }
+    Write-Host ''
+    Write-Host "  $(T 'ProfilePickHint')" -ForegroundColor Cyan
+    $i = 1
+    foreach ($e in $Entries) {
+        $label = if ($e.Label -and $e.Label -ne $e.Folder) {
+            "$($e.Label) ($($e.Folder))"
+        } else {
+            $e.Folder
+        }
+        Write-Host "    [$i] $label" -ForegroundColor White
+        $i++
+    }
+    Write-Host "    [A] $(T 'BtnSelectAll')" -ForegroundColor Gray
+    $choice = Read-Host '  Wybierz numery (np. 1,2) lub A'
+    if ($choice.Trim().ToUpper() -eq 'A') {
+        return @($Entries | ForEach-Object { [string]$_.Folder })
+    }
+    $nums = $choice -split '[,\s;]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $picked = @()
+    foreach ($n in $nums) {
+        $idx = 0
+        if ([int]::TryParse($n, [ref]$idx) -and $idx -ge 1 -and $idx -le (Get-ArrayCount $Entries)) {
+            $picked += [string]$Entries[$idx - 1].Folder
+        }
+    }
+    return @($picked | Select-Object -Unique)
+}
+
 function Start-ConsoleApp {
     function Invoke-BackupMenu ([bool]$fullBackup) {
         Write-Header
@@ -549,7 +738,11 @@ function Start-ConsoleApp {
                 default { Write-Info $m }
             }
         }
-        Invoke-BraveBackupCore -FullBackup $fullBackup -OnLog $log | Out-Null
+        $entries = @(Get-BraveProfileEntries)
+        if ((Get-ArrayCount $entries) -eq 0) { Write-Err (T 'MsgNoProfiles'); Pause-AndReturn; return }
+        $picked = Pick-ConsoleProfiles -Entries $entries
+        if ((Get-ArrayCount $picked) -eq 0) { Write-Warn (T 'ProfilePickNone'); Pause-AndReturn; return }
+        Invoke-BraveBackupCore -FullBackup $fullBackup -ProfileFolders $picked -OnLog $log | Out-Null
         Pause-AndReturn
     }
 
@@ -581,7 +774,11 @@ function Start-ConsoleApp {
                 default { Write-Info $m }
             }
         }
-        Invoke-BraveRestoreCore -BackupPath $selected.FullName -ReplaceProfile $replaceProfile -OnLog $log | Out-Null
+        $entries = @(Get-BackupProfileEntriesFromBackup -BackupPath $selected.FullName)
+        $picked = Pick-ConsoleProfiles -Entries $entries
+        if ((Get-ArrayCount $picked) -eq 0) { Write-Warn (T 'ProfilePickNone'); Pause-AndReturn; return }
+        Invoke-BraveRestoreCore -BackupPath $selected.FullName -ReplaceProfile $replaceProfile `
+            -ProfileFolders $picked -OnLog $log | Out-Null
         Pause-AndReturn
     }
 

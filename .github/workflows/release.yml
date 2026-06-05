@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Tag release (np. v2.0.1) — tylko przy recznym uruchomieniu'
         required: false
-        default: 'v2.1.0'
+        default: 'v2.1.1'
 
 permissions:
   contents: write
@@ -69,5 +69,5 @@ jobs:
             BraveBackup.exe
             docs/POMOC-pl.md
             docs/HELP-en.md
-            RELEASE_NOTES_v2.1.0.md
+            RELEASE_NOTES_v2.1.1.md
           fail_on_unmatched_files: true

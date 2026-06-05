@@ -1,4 +1,4 @@
-# Brave Backup Tool v2.1
+# Brave Backup Tool v2.1.1
 
 Narzędzie na **Windows** do kopii zapasowej i przywracania profilu przeglądarki **Brave** — zakładki, hasła, historia, rozszerzenia, sesje kart.
 
@@ -41,6 +41,7 @@ Alternatywnie: sklonuj repozytorium i uruchom `Uruchom.bat`.
 | Bezpieczeństwo | Okno z informacją o lokalnych kopiach |
 | Przywracanie | Checkbox potwierdzenia + opcjonalna kopia przed restore |
 | Języki | Polski i angielski (PL / EN) |
+| Wiele profili | Wybór profilu Brave przy kopii i przywracaniu |
 
 ## Tryb konsoli
 
@@ -63,8 +64,8 @@ Wynik: `BraveBackup.exe` w katalogu głównym projektu.
 Po wypchnięciu tagu `v*` workflow buduje EXE i publikuje go w **Releases**:
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0
+git tag v2.1.1
+git push origin v2.1.1
 ```
 
 Możesz też uruchomić workflow ręcznie: **Actions → Release EXE → Run workflow**.

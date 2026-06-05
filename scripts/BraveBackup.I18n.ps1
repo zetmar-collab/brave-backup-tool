@@ -2,7 +2,7 @@
 $Script:Strings = @{
     pl = @{
         AppTitle              = 'Brave Backup Tool'
-        AppVersion            = 'v2.1'
+        AppVersion            = 'v2.1.1'
         Busy                  = '  [pracuje...]'
         BraveClosed           = 'Brave: zamkniety'
         BraveRunning          = 'Brave: uruchomiony ({0} procesow)'
@@ -40,7 +40,7 @@ $Script:Strings = @{
         OnboardingFinish      = 'Zacznij'
         OnboardingSetFolder   = 'Wybierz folder teraz'
         SecurityTitle         = 'Bezpieczenstwo i prywatnosc'
-        SecurityBody          = "• Kopie sa zapisywane TYLKO lokalnie na Twoim dysku — bez chmury.{0}• Kopie zawieraja hasla i ciasteczka — nie udostepniaj folderu innym.{0}• Program zamyka Brave, aby skopiowac zablokowane pliki.{0}• Kod zrodlowy: open source (MIT) na GitHub.{0}• Nie wysylamy danych do internetu."
+        SecurityBody          = '- Kopie sa zapisywane TYLKO lokalnie na Twoim dysku - bez chmury.{0}- Kopie zawieraja hasla i ciasteczka - nie udostepniaj folderu innym.{0}- Program zamyka Brave, aby skopiowac zablokowane pliki.{0}- Kod zrodlowy: open source (MIT) na GitHub.{0}- Nie wysylamy danych do internetu.'
         SettingsTitle         = 'Ustawienia'
         SettingsMaxBackups    = 'Maksymalna liczba kopii (rotacja):'
         SettingsLanguage      = 'Jezyk:'
@@ -57,6 +57,7 @@ $Script:Strings = @{
         LogDeleted            = 'Usunieto: {0}'
         LogCopyingItem        = 'Kopiuje: {0}...'
         LogCopyingProfile     = 'Kopiuje profil: {0}'
+        LogProfilesFound      = 'Profili do kopii: {0} - {1}'
         LogPreRestore         = 'Tworze kopie bezpieczenstwa przed przywroceniem...'
         LogDone               = 'Kopia gotowa: {0}'
         LogSize               = 'Rozmiar: {0}'
@@ -68,13 +69,20 @@ $Script:Strings = @{
         LogRestoreProfile     = 'Przywracam profil: {0}'
         LogClearProfile       = '  Czyszczenie profilu przed przywroceniem...'
         LogOldRemoved         = 'Usunieto stara kopie: {0}'
-        LogCanceledBrave      = 'Anulowano — zamknij Brave lub potwierdz zamkniecie.'
+        LogCanceledBrave      = 'Anulowano - zamknij Brave lub potwierdz zamkniecie.'
         LogOpCanceled         = 'Operacja anulowana — Brave nadal dziala.'
         LogBraveCloseFail     = 'Nie udalo sie zamknac wszystkich procesow Brave.'
         LogErrPrefix          = 'Blad: {0}'
         LogErrItem            = '  Blad: {0}'
         MsgNoBraveData        = 'Nie znaleziono danych Brave: {0}'
         MsgNoProfiles         = 'Brak profili Brave do skopiowania.'
+        MsgBackupNothingCopied = 'Nie skopiowano zadnych plikow. Zamknij Brave i sprobuj ponownie.'
+        ProfilePickBackupTitle = 'Wybierz profile do kopii'
+        ProfilePickRestoreTitle = 'Wybierz profile do przywrocenia'
+        ProfilePickHint        = 'Zaznacz jeden lub wiecej profili:'
+        ProfilePickNone        = 'Zaznacz co najmniej jeden profil.'
+        BtnSelectAll           = 'Zaznacz wszystkie'
+        BtnSelectNone          = 'Odznacz wszystkie'
         MsgBackupNotFound     = 'Nie znaleziono kopii: {0}'
         MsgSelectBackup       = 'Zaznacz kopie na liscie.'
         MsgCloseBrave         = 'Brave jest uruchomiony. Zamknac wszystkie procesy Brave?'
@@ -97,7 +105,7 @@ $Script:Strings = @{
     }
     en = @{
         AppTitle              = 'Brave Backup Tool'
-        AppVersion            = 'v2.1'
+        AppVersion            = 'v2.1.1'
         Busy                  = '  [working...]'
         BraveClosed           = 'Brave: closed'
         BraveRunning          = 'Brave: running ({0} process(es))'
@@ -135,7 +143,7 @@ $Script:Strings = @{
         OnboardingFinish      = 'Get started'
         OnboardingSetFolder   = 'Choose folder now'
         SecurityTitle         = 'Security & privacy'
-        SecurityBody          = "• Backups are stored ONLY locally — no cloud.{0}• Backups contain passwords and cookies — do not share the folder.{0}• The app closes Brave to copy locked files.{0}• Open source (MIT) on GitHub.{0}• No data is sent over the internet."
+        SecurityBody          = '- Backups are stored ONLY locally - no cloud.{0}- Backups contain passwords and cookies - do not share the folder.{0}- The app closes Brave to copy locked files.{0}- Open source (MIT) on GitHub.{0}- No data is sent over the internet.'
         SettingsTitle         = 'Settings'
         SettingsMaxBackups    = 'Maximum backups (rotation):'
         SettingsLanguage      = 'Language:'
@@ -152,6 +160,7 @@ $Script:Strings = @{
         LogDeleted            = 'Deleted: {0}'
         LogCopyingItem        = 'Copying: {0}...'
         LogCopyingProfile     = 'Copying profile: {0}'
+        LogProfilesFound      = 'Profiles to backup: {0} - {1}'
         LogPreRestore         = 'Creating safety backup before restore...'
         LogDone               = 'Backup ready: {0}'
         LogSize               = 'Size: {0}'
@@ -170,6 +179,13 @@ $Script:Strings = @{
         LogErrItem            = '  Error: {0}'
         MsgNoBraveData        = 'Brave data not found: {0}'
         MsgNoProfiles         = 'No Brave profiles to copy.'
+        MsgBackupNothingCopied = 'No files were copied. Close Brave and try again.'
+        ProfilePickBackupTitle = 'Select profiles to backup'
+        ProfilePickRestoreTitle = 'Select profiles to restore'
+        ProfilePickHint        = 'Check one or more profiles:'
+        ProfilePickNone        = 'Select at least one profile.'
+        BtnSelectAll           = 'Select all'
+        BtnSelectNone          = 'Clear all'
         MsgBackupNotFound     = 'Backup not found: {0}'
         MsgSelectBackup       = 'Select a backup from the list.'
         MsgCloseBrave         = 'Brave is running. Close all Brave processes?'
@@ -205,10 +221,15 @@ function T([string]$Key) {
     return $Key
 }
 
-function Tf([string]$Key, [object[]]$Args) {
+function Tf {
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter()][object[]]$FormatValues
+    )
     $fmt = T $Key
-    if ($null -eq $Args -or $Args.Count -eq 0) { return $fmt }
-    return [string]::Format($fmt, $Args)
+    $vals = @($FormatValues)
+    if ($vals.Count -eq 0) { return $fmt }
+    return [string]::Format($fmt, $vals)
 }
 
 function Get-GuiLangToggleLabel {
