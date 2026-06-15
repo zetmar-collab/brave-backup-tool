@@ -43,7 +43,9 @@ if (Test-Path $__i18nPath) { . $__i18nPath }
 
 $Script:Lang = 'pl'
 $Script:OnboardingCompleted = $false
-$Script:GitHubReleasesUrl = 'https://github.com/zetmar-collab/brave-backup-tool/releases/latest'
+$Script:AppVersion = '2.2.0'
+$Script:GitHubRepoUrl = 'https://github.com/zetmar-collab/brave-backup-tool'
+$Script:GitHubReleasesUrl = "$Script:GitHubRepoUrl/releases/latest"
 
 # ── Sciezki (dziala jako .ps1 i jako skompilowane .exe) ─────────────────────
 
@@ -79,6 +81,7 @@ $Script:Config = @{
     BackupRoot      = Join-Path $BackupParent 'backups'
     MaxBackups      = 10
     CacheExclude    = @('Cache', 'Code Cache', 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'ShaderCache', 'GrShaderCache', 'blob_storage')
+    RootFiles       = @('Local State', 'Last Browser', 'Last Version', 'First Run')
     ImportantItems  = @(
         'Bookmarks', 'Bookmarks.bak', 'Cookies', 'Login Data', 'Login Data For Account',
         'History', 'Favicons', 'Preferences', 'Secure Preferences', 'Web Data',
@@ -177,6 +180,20 @@ function Format-Size ($bytes) {
     if ($n -ge $mb) { return ('{0:N2} MB' -f ($n / $mb)) }
     if ($n -ge $kb) { return ('{0:N2} KB' -f ($n / $kb)) }
     return ('{0} B' -f [long]$n)
+}
+
+function Get-FreeSpace ([string]$path) {
+    # Wolne miejsce na dysku, na ktorym lezy $path (dziala tez gdy katalog jeszcze nie istnieje)
+    try {
+        $probe = $path
+        while ($probe -and -not (Test-Path $probe)) { $probe = Split-Path -Parent $probe }
+        if (-not $probe) { return [long]::MaxValue }
+        $root = [System.IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $probe).Path)
+        $drive = New-Object System.IO.DriveInfo($root)
+        return [long]$drive.AvailableFreeSpace
+    } catch {
+        return [long]::MaxValue
+    }
 }
 
 function Get-FolderSize ([string]$path) {
@@ -337,8 +354,7 @@ function Copy-UserDataRootFiles {
         [string]$DestDir,
         [scriptblock]$OnLog
     )
-    $rootFiles = @('Local State', 'Last Browser', 'Last Version', 'First Run')
-    foreach ($fileName in $rootFiles) {
+    foreach ($fileName in $Script:Config.RootFiles) {
         $src = Join-Path $Script:Config.BraveUserData $fileName
         if (-not (Test-Path $src)) { continue }
         try {
@@ -356,6 +372,18 @@ function Get-BackupList {
     if (-not (Test-Path $Script:Config.BackupRoot)) { return @() }
     return @(Get-ChildItem $Script:Config.BackupRoot -Directory -ErrorAction SilentlyContinue |
         Sort-Object CreationTime -Descending)
+}
+
+function Get-BackupSize ([string]$BackupPath) {
+    # Najpierw probujemy odczytac rozmiar z metadanych (szybkie), inaczej liczymy katalog
+    $metaPath = Join-Path $BackupPath 'backup-meta.json'
+    if (Test-Path $metaPath) {
+        try {
+            $meta = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -ne $meta.SizeBytes) { return [long]$meta.SizeBytes }
+        } catch { }
+    }
+    return (Get-FolderSize $BackupPath)
 }
 
 function Remove-OldBackups ([scriptblock]$OnLog) {
@@ -433,15 +461,6 @@ function Invoke-BraveBackupCore {
     $mode = if ($FullBackup) { 'pelna' } else { 'wybrane' }
     $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
     $backupDir = Join-Path $Script:Config.BackupRoot "${stamp}_${mode}"
-    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-
-    $meta = @{
-        Created    = (Get-Date -Format 'o')
-        Mode       = $mode
-        SourcePath = $Script:Config.BraveUserData
-        AppVersion = '2.1.1'
-        Profiles   = @()
-    }
 
     $profileEntries = @(Get-BraveProfileEntries)
     if ((Get-ArrayCount $ProfileFolders) -gt 0) {
@@ -450,6 +469,36 @@ function Invoke-BraveBackupCore {
     if ((Get-ArrayCount $profileEntries) -eq 0) {
         if ($OnLog) { & $OnLog (T 'MsgNoProfiles') 'err' }
         return $false
+    }
+
+    # Pelna kopia: czyscimy cache zywego profilu przed kopiowaniem (zwalnia miejsce,
+    # cache i tak nie jest kopiowany). Brave jest juz zamkniety na tym etapie.
+    if ($FullBackup) {
+        Clear-BraveLiveCache -ProfileEntries $profileEntries -OnLog $OnLog | Out-Null
+    }
+
+    # Kontrola wolnego miejsca: szacujemy rozmiar zrodla (pelny backup) + 10% zapasu
+    if ($FullBackup) {
+        $estimate = 0L
+        foreach ($entry in $profileEntries) { $estimate += (Get-FolderSize $entry.Path) }
+        $needed = [long]($estimate * 1.1)
+        $free = Get-FreeSpace $Script:Config.BackupRoot
+        if ($free -lt $needed) {
+            if ($OnLog) {
+                & $OnLog (Tf 'MsgNotEnoughSpace' @((Format-Size $needed), (Format-Size $free))) 'err'
+            }
+            return $false
+        }
+    }
+
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+
+    $meta = @{
+        Created    = (Get-Date -Format 'o')
+        Mode       = $mode
+        SourcePath = $Script:Config.BraveUserData
+        AppVersion = $Script:AppVersion
+        Profiles   = @()
     }
 
     if ($OnLog) {
@@ -492,6 +541,8 @@ function Invoke-BraveBackupCore {
         return $false
     }
 
+    $backupSize = Get-FolderSize $backupDir
+    $meta.SizeBytes = $backupSize
     $meta | ConvertTo-Json -Depth 4 |
         Set-Content (Join-Path $backupDir 'backup-meta.json') -Encoding UTF8
 
@@ -499,9 +550,35 @@ function Invoke-BraveBackupCore {
     if ($OnProgress) { & $OnProgress 100 }
     if ($OnLog) {
         & $OnLog (Tf 'LogDone' @($backupDir)) 'ok'
-        & $OnLog (Tf 'LogSize' @(Format-Size (Get-FolderSize $backupDir))) 'info'
+        & $OnLog (Tf 'LogSize' @(Format-Size $backupSize)) 'info'
     }
     return $true
+}
+
+function Clear-BraveLiveCache {
+    param(
+        [object[]]$ProfileEntries,
+        [scriptblock]$OnLog
+    )
+    # Usuwa katalogi cache z ZYWEGO profilu Brave (wymaga zamknietego Brave).
+    # Cache i tak nie trafia do kopii (CacheExclude) — czyszczenie zwalnia miejsce.
+    $freed = 0L
+    foreach ($entry in $ProfileEntries) {
+        foreach ($cacheName in $Script:Config.CacheExclude) {
+            $p = Join-Path $entry.Path $cacheName
+            if (-not (Test-Path $p)) { continue }
+            try {
+                $freed += (Get-FolderSize $p)
+                Remove-Item $p -Recurse -Force -ErrorAction Stop
+            } catch {
+                if ($OnLog) { & $OnLog (Tf 'LogErrItem' @("$cacheName : $($_.Exception.Message)")) 'warn' }
+            }
+        }
+    }
+    if ($OnLog -and $freed -gt 0) {
+        & $OnLog (Tf 'LogCacheCleared' @(Format-Size $freed)) 'info'
+    }
+    return $freed
 }
 
 function Clear-ProfileDirectory ([string]$ProfilePath) {
@@ -534,7 +611,6 @@ function Invoke-BraveRestoreCore {
         if ($OnLog) { & $OnLog (T 'ProfilePickNone') 'err' }
         return $false
     }
-    $restoreRootFiles = ((Get-ArrayCount $profileNames) -eq (Get-ArrayCount $allInBackup))
 
     $totalP = [Math]::Max((Get-ArrayCount $profileNames), 1)
     $pIdx = 0
@@ -588,13 +664,14 @@ function Invoke-BraveRestoreCore {
         $pIdx++
     }
 
-    if ($restoreRootFiles) {
-        foreach ($rootFile in @('Local State', 'Last Browser', 'Last Version', 'First Run')) {
-            $src = Join-Path $BackupPath $rootFile
-            if (-not (Test-Path $src)) { continue }
-            Copy-Item $src (Join-Path $Script:Config.BraveUserData $rootFile) -Force -ErrorAction SilentlyContinue
-            if ($OnLog -and $rootFile -eq 'Local State') { & $OnLog (T 'LogRestoredLS') 'ok' }
-        }
+    # 'Local State' zawiera klucz szyfrowania (os_crypt) dla hasel i ciasteczek —
+    # przywracamy go ZAWSZE, takze przy odtwarzaniu pojedynczego profilu,
+    # inaczej zapisane hasla/ciasteczka nie odszyfruja sie.
+    foreach ($rootFile in $Script:Config.RootFiles) {
+        $src = Join-Path $BackupPath $rootFile
+        if (-not (Test-Path $src)) { continue }
+        Copy-Item $src (Join-Path $Script:Config.BraveUserData $rootFile) -Force -ErrorAction SilentlyContinue
+        if ($OnLog -and $rootFile -eq 'Local State') { & $OnLog (T 'LogRestoredLS') 'ok' }
     }
 
     if ($OnProgress) { & $OnProgress 100 }
@@ -668,6 +745,18 @@ function Write-Warn ([string]$msg) { Write-Status "!   $msg" 'Yellow' }
 function Write-Err ([string]$msg) { Write-Status "X   $msg" 'Red' }
 function Write-Info ([string]$msg) { Write-Status ">>  $msg" 'Cyan' }
 
+function New-ConsoleLogger {
+    return {
+        param($m, $t)
+        switch ($t) {
+            'ok'   { Write-Success $m }
+            'err'  { Write-Err $m }
+            'warn' { Write-Warn $m }
+            default { Write-Info $m }
+        }
+    }
+}
+
 function Show-Backups ($backups) {
     if ((Get-ArrayCount $backups) -eq 0) { Write-Warn 'Brak kopii zapasowych.'; return }
     Write-Host ''
@@ -675,7 +764,7 @@ function Show-Backups ($backups) {
     Write-Host '  --  -----------------------------  ----------------  -------' -ForegroundColor DarkGray
     $i = 1
     foreach ($b in $backups) {
-        $size = Format-Size (Get-FolderSize $b.FullName)
+        $size = Format-Size (Get-BackupSize $b.FullName)
         $date = Format-BackupDateTime $b.CreationTime
         Write-Host ("  {0,-2}  {1,-29}  {2}  {3,8}" -f $i, $b.Name, $date, $size) -ForegroundColor $(if ($i -eq 1) { 'White' } else { 'Gray' })
         $i++
@@ -730,14 +819,7 @@ function Start-ConsoleApp {
             Pause-AndReturn
             return
         }
-        $log = { param($m, $t)
-            switch ($t) {
-                'ok'   { Write-Success $m }
-                'err'  { Write-Err $m }
-                'warn' { Write-Warn $m }
-                default { Write-Info $m }
-            }
-        }
+        $log = New-ConsoleLogger
         $entries = @(Get-BraveProfileEntries)
         if ((Get-ArrayCount $entries) -eq 0) { Write-Err (T 'MsgNoProfiles'); Pause-AndReturn; return }
         $picked = Pick-ConsoleProfiles -Entries $entries
@@ -766,14 +848,7 @@ function Start-ConsoleApp {
         $replace = Read-Host '  Pelne przywrocenie (usun pliki spoza kopii)? [T/n]'
         $replaceProfile = ($replace -ne 'n' -and $replace -ne 'N')
         if (-not (Ensure-BraveClosedForOperation -UseConsolePrompt $true)) { Pause-AndReturn; return }
-        $log = { param($m, $t)
-            switch ($t) {
-                'ok'   { Write-Success $m }
-                'err'  { Write-Err $m }
-                'warn' { Write-Warn $m }
-                default { Write-Info $m }
-            }
-        }
+        $log = New-ConsoleLogger
         $entries = @(Get-BackupProfileEntriesFromBackup -BackupPath $selected.FullName)
         $picked = Pick-ConsoleProfiles -Entries $entries
         if ((Get-ArrayCount $picked) -eq 0) { Write-Warn (T 'ProfilePickNone'); Pause-AndReturn; return }

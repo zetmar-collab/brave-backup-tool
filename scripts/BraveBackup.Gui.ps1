@@ -199,7 +199,7 @@ function Start-GuiApp {
             [PSCustomObject]@{
                 BackupName = [string]$b.Name
                 DateStr    = Format-BackupDateTime $b.CreationTime
-                SizeStr    = Format-Size (Get-FolderSize $b.FullName)
+                SizeStr    = Format-Size (Get-BackupSize $b.FullName)
                 FullPath   = [string]$b.FullName
             }
         }
@@ -658,7 +658,7 @@ function Start-GuiApp {
         Apply-GuiLanguage
         Gui-Refresh
     })
-    $c.btnHelp.Add_Click({ Start-Process 'https://github.com/zetmar-collab/brave-backup-tool' })
+    $c.btnHelp.Add_Click({ Start-Process $Script:GitHubRepoUrl })
     $c.btnSecurity.Add_Click({ Show-SecurityDialog })
     $c.btnSettings.Add_Click({ Show-SettingsDialog })
 

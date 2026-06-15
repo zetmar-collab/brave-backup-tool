@@ -4,7 +4,7 @@
     Buduje BraveBackup.exe z ikona (assets\BraveBackup.ico).
 #>
 param(
-    [string]$Version = '2.1.1.0'
+    [string]$Version = '2.2.0.0'
 )
 $ErrorActionPreference = 'Stop'
 
